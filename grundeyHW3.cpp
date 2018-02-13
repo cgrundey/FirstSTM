@@ -130,9 +130,6 @@ typedef struct {
 
 vector<Acct> accts;
 vector<pthread_mutex_t> myLocks;
-Acct write_set[10];
-Acct read_set[10];
-//mem_ver????????
 
 
 void* th_run(void * args)
