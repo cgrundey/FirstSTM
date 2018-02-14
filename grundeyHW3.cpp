@@ -59,7 +59,7 @@ int tx_read(int addr) {
     tx_abort();
 }
 
-void tx_write(int addr) {
+void tx_write(int addr, int val) {
   /**
   * lock = read(lock[addr]);
   * ver = read(version[addr]);
@@ -71,7 +71,7 @@ void tx_write(int addr) {
   int lock = myLocks[addr].lock();
   int ver = accts[addr].ver;
   if (!lock) {
-
+    accts[addr] = val;
   }
   else
     tx_abort();
@@ -139,6 +139,7 @@ void* th_run(void * args)
   srand((unsigned)time(0));
   int workload = NUM_TRFR/numThreads;
   int localTransfers = 0;
+  tx_begin(); // ________________BEGIN_________________
   for (int i = 0; i < workload; i++) {
     int r1 = 0;
     int r2 = 0;
@@ -147,10 +148,14 @@ void* th_run(void * args)
         r1 = rand() % NUM_ACCTS;
         r2 = rand() % NUM_ACCTS;
       }
-      // Do transfer
-      // accts[r1] accts[r2]
+      // Perform the transfer
+      int a1 = tx_read(r1);
+      int a2 = tx_read(r2);
+      tx_write(r1, a1 - TRFR_AMT);
+      tx_write(r2, a2 + TRFR_AMT);
     }
   }
+  tx_commit(); // ______________END__________________
   printf("Thread %ld transfers: %d\n", id, localTransfers);
   return 0;
 }
@@ -158,9 +163,9 @@ void* th_run(void * args)
 int main(int argc, char* argv[]) {
   // Input arguments error checking
   if (argc != 2) {
-		printf("Usage: <# of threads -> 1, 2, or 4\n");
-		exit(0);
-	} else {
+    printf("Usage: <# of threads -> 1, 2, or 4\n");
+    exit(0);
+  } else {
     numThreads = atoi(argv[1]);
     if (numThreads != 1 && numThreads != 2 && numThreads != 4) {
       printf("Usage: <# of threads -> 1, 2, or 4\n");
@@ -182,12 +187,12 @@ int main(int argc, char* argv[]) {
   pthread_attr_t thread_attr;
   pthread_attr_init(&thread_attr);
 
-	pthread_t client_th[300];
-	long ids = 1;
-	for (int i = 1; i < numThreads; i++) {
-		pthread_create(&client_th[ids-1], &thread_attr, th_run, (void*)ids);
-		ids++;
-	}
+  pthread_t client_th[300];
+  long ids = 1;
+  for (int i = 1; i < numThreads; i++) {
+    pthread_create(&client_th[ids-1], &thread_attr, th_run, (void*)ids);
+    ids++;
+  }
 
 /* EXECUTION BEGIN */
   unsigned long long start = get_real_time();
@@ -199,8 +204,8 @@ int main(int argc, char* argv[]) {
   }
 
   for (int i=0; i<ids-1; i++) {
-		pthread_join(client_th[i], NULL);
-	}
+    pthread_join(client_th[i], NULL);
+  }
 /* EXECUTION END */
   pthread_mutex_destroy(&mylock);
 
