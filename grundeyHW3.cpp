@@ -17,6 +17,7 @@
 #include <sys/sem.h>
 #include <iostream>
 #include <time.h>
+#include <unordered_map>
 
 #include <errno.h>
 
@@ -77,8 +78,8 @@ void tx_write(int addr, int val) {
     tx_abort();
 }
 
-void tx_abort() {
-  return;
+bool tx_abort() {
+  return false;
 }
 
 void tx_commit() {
@@ -129,8 +130,8 @@ typedef struct {
 } Acct;
 
 vector<Acct> accts;
+// unordered_map<pthread_mutex_t, int> myLocks;
 vector<pthread_mutex_t> myLocks;
-
 
 void* th_run(void * args)
 {
@@ -138,25 +139,24 @@ void* th_run(void * args)
   barrier(0);
   srand((unsigned)time(0));
   int workload = NUM_TRFR/numThreads;
-  int localTransfers = 0;
-  tx_begin(); // ________________BEGIN_________________
-  for (int i = 0; i < workload; i++) {
-    int r1 = 0;
-    int r2 = 0;
-    for (int j = 0; j < 10; j++) {
-      while (r1 == r2) {
-        r1 = rand() % NUM_ACCTS;
-        r2 = rand() % NUM_ACCTS;
+  do { // ________________BEGIN_________________
+    tx_begin();
+    for (int i = 0; i < workload; i++) {
+      int r1 = 0;
+      int r2 = 0;
+      for (int j = 0; j < 10; j++) {
+        while (r1 == r2) {
+          r1 = rand() % NUM_ACCTS;
+          r2 = rand() % NUM_ACCTS;
+        }
+        // Perform the transfer
+        int a1 = tx_read(r1);
+        int a2 = tx_read(r2);
+        tx_write(r1, a1 - TRFR_AMT);
+        tx_write(r2, a2 + TRFR_AMT);
       }
-      // Perform the transfer
-      int a1 = tx_read(r1);
-      int a2 = tx_read(r2);
-      tx_write(r1, a1 - TRFR_AMT);
-      tx_write(r2, a2 + TRFR_AMT);
     }
-  }
-  tx_commit(); // ______________END__________________
-  printf("Thread %ld transfers: %d\n", id, localTransfers);
+  } while (!tx_commit()); // ______________END__________________
   return 0;
 }
 
@@ -178,10 +178,12 @@ int main(int argc, char* argv[]) {
     accts[i] = INIT_BALANCE;
   }
 
-  // initialize mutex lock
-  if (pthread_mutex_init(&mylock, NULL) != 0) {
-    printf("\n mutex init failed\n");
-    return 1;
+  // initialize mutex locks
+  for (int i = 0; i < NUM_ACCTS; i++) {
+    if (pthread_mutex_init(&mylocks[i], NULL) != 0) {
+      printf("\n mutex %d init failed\n", i);
+      return 1;
+    }
   }
   // Thread initializations
   pthread_attr_t thread_attr;
