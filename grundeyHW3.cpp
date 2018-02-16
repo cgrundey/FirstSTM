@@ -18,6 +18,7 @@
 #include <iostream>
 #include <time.h>
 #include <unordered_map>
+#include <list> // Linked list for read/write sets
 
 #include <errno.h>
 
@@ -31,14 +32,15 @@
 
 using namespace std;
 
-void tx_begin() {
+
+void tx_begin(list<Acct>& read_set, list<Acct>& write_set) {
   // Reset read_set & write_set
   for (int i = 0; i < 10; i++) {
-    read_set[i] =
-    write_set[i] =
+    read_set.clear();
+    write_set.clear();
   }
 }
-int tx_read(int addr) {
+int tx_read(int addr, list<Acct>& read_set) {
   /**
   * lock = read(lock[addr]);
   * ver = read(version[addr]);
@@ -50,17 +52,15 @@ int tx_read(int addr) {
   *   tx_abort();
   */
   int lock = myLocks[addr].lock();
-  int ver = accts[addr].ver;
   if (!lock) {
-    Acct temp = {addr, accts[addr].value, ver};
-    read_set[rp] = temp;
+    read_set.push_back(accts[addr]);
     return accts[addr].value;
   }
   else
-    tx_abort();
+    tx_abort(); // TODO
 }
 
-void tx_write(int addr, int val) {
+void tx_write(int addr, int val, list<Acct>& write_set) {
   /**
   * lock = read(lock[addr]);
   * ver = read(version[addr]);
@@ -70,21 +70,44 @@ void tx_write(int addr, int val) {
   *   tx_abort();
   */
   int lock = myLocks[addr].lock();
-  int ver = accts[addr].ver;
   if (!lock) {
-    accts[addr] = val;
+    Acct temp; temp.addr = addr;
+    temp.value = val;
+    temp.ver = accts[addr].ver;
+    write_set.push_back(temp);
   }
   else
-    tx_abort();
+    tx_abort(); // TODO
 }
 
-bool tx_abort() {
+bool tx_abort() { // TODO
   return false;
 }
 
 void tx_commit() {
+
   // validate
   // acquire myLocks
+  for (std::list<int>::const_iterator iterator = write_set.begin(), end = write_set.end(); iterator != end; ++iterator) {
+      myLocks[*iterator.addr].lock();
+      if (*iterator.ver != accts[*iterator.addr].ver) {
+        unlock(all);  // TODO
+        tx_abort();   // TODO
+      }
+  }
+  for (std::list<int>::const_iterator iterator = read_set.begin(), end = read_set.end(); iterator != end; ++iterator) {
+      myLocks[*iterator.addr].lock();
+      if (*iterator.ver != accts[*iterator.addr].ver) {
+        unlock(all); // TODO
+        tx_abort();  // TODO
+      }
+  }
+  for (std::list<int>::const_iterator iterator = write_set.begin(), end = write_set.end(); iterator != end; ++iterator) {
+    accts[*iterator.addr] = *iterator.value;
+    accts[*iterator.addr].ver = *iterator.ver;
+    myLocks[*iterator.addr].unlock();
+  }
+
   /*
   for each(entry in write_set) {
     lock(entry);
@@ -138,10 +161,14 @@ void* th_run(void * args)
   long id = (long)args;
   barrier(0);
   srand((unsigned)time(0));
+
+  list<Acct> read_set;
+  list<Acct> write_set;
+
   int workload = NUM_TRFR/numThreads;
-  do { // ________________BEGIN_________________
-    tx_begin();
-    for (int i = 0; i < workload; i++) {
+  for (int i = 0; i < workload; i++) {
+    do { // ________________BEGIN_________________
+      tx_begin(read_set, write_set);
       int r1 = 0;
       int r2 = 0;
       for (int j = 0; j < 10; j++) {
@@ -150,13 +177,13 @@ void* th_run(void * args)
           r2 = rand() % NUM_ACCTS;
         }
         // Perform the transfer
-        int a1 = tx_read(r1);
-        int a2 = tx_read(r2);
-        tx_write(r1, a1 - TRFR_AMT);
-        tx_write(r2, a2 + TRFR_AMT);
+        int a1 = tx_read(r1, read_set);
+        int a2 = tx_read(r2, read_set);
+        tx_write(r1, a1 - TRFR_AMT, write_set);
+        tx_write(r2, a2 + TRFR_AMT, write_set);
       }
-    }
-  } while (!tx_commit()); // ______________END__________________
+    } while (!tx_commit()); // ______________END__________________
+  }
   return 0;
 }
 
