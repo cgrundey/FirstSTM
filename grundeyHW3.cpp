@@ -61,7 +61,7 @@ class STM_exception: public exception {
   virtual const char* what() const throw() {
     return "Transaction aborted";
   }
-};
+}myexc;
 
 /* Where a transaction begins. Read and write sets are intialized and cleared. */
 void tx_begin() {
@@ -70,14 +70,18 @@ void tx_begin() {
 }
 /* Aborts from transaction by throwing ann exception of type STM_exception */
 void tx_abort() {
-  STM_exception myexc;
-  throw myexc;
+  list<Acct>::iterator iterator;
+  for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator)
+    pthread_mutex_unlock(&(myLocks[iterator->addr]));
+  for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator)
+    pthread_mutex_unlock(&(myLocks[iterator->addr]));
+  throw "Transaction Aborted";
 }
 /* Adds account with version to read_set and returns the value for later use. */
 int tx_read(int addr) {
-  int lck = pthread_mutex_trylock(&(myLocks[addr]));
-  if (!lck) {
+  if (!pthread_mutex_trylock(&(myLocks[addr]))) {
     read_set.push_back(accts[addr]);
+    pthread_mutex_unlock(&(myLocks[addr]));
     return accts[addr].value;
   }
   else
@@ -85,49 +89,33 @@ int tx_read(int addr) {
 }
 /* Adds a version of the account at addr to write_set with the given value. */
 bool tx_write(int addr, int val) {
-  int lck = pthread_mutex_trylock(&(myLocks[addr]));
-  if (!lck) {
-    Acct temp; temp.addr = addr;
+  if (!pthread_mutex_trylock(&(myLocks[addr]))) {
+    Acct temp;
+    temp.addr = addr;
     temp.value = val;
     temp.ver = accts[addr].ver;
     write_set.push_back(temp);
-  } else
+    pthread_mutex_unlock(&(myLocks[addr]));
+  } else {
     tx_abort();
+  }
 }
 /* Attempts to commit the transaction. Checks read and write set versions
  * and compares it to memory versions (i.e. accts[].ver). If valid, all
  * accounts in read and write sets are written back to memory. */
 void tx_commit() {
   list<Acct>::iterator iterator;
-  bool aborting = false;
   /* Validate write_set */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
     pthread_mutex_trylock(&(myLocks[iterator->addr]));
-    if (iterator->ver != accts[iterator->addr].ver) {
-      aborting = true;
-      break;
-    }
+    if (iterator->ver != accts[iterator->addr].ver)
+      tx_abort();
   }
-  if (aborting) {
-    // Release all locks
-    for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator)
-      pthread_mutex_unlock(&(myLocks[iterator->addr]));
-    tx_abort();
-  }
-  aborting = false;
   /* Validate read_set */
   for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator) {
     pthread_mutex_trylock(&(myLocks[iterator->addr]));
-    if (iterator->ver != accts[iterator->addr].ver) {
-      aborting = true;
-      break;
-    }
-  }
-  if (aborting) {
-    // Release all locks
-    for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator)
-      pthread_mutex_unlock(&(myLocks[iterator->addr]));
-    tx_abort();
+    if (iterator->ver != accts[iterator->addr].ver)
+      tx_abort();
   }
   /* Validation is a success */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
@@ -155,7 +143,6 @@ void barrier(int which) {
 // Thread function
 void* th_run(void * args)
 {
-  printf("Testing...\n");
   long id = (long)args;
   barrier(0);
   srand((unsigned)time(0));
@@ -185,7 +172,8 @@ void* th_run(void * args)
           tx_write(r2, a2 + TRFR_AMT);
           tx_commit();
         }
-      } catch(STM_exception ex) {
+      } catch(const char* msg) {
+        printf("ERROR: %s\n", msg);
         aborted = true;
       }
     } while (aborted);
@@ -240,10 +228,13 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < NUM_ACCTS; i++) {
     totalMoneyBefore += accts[i].value;
   }
+  printf("Before Join\n");
 
   for (int i=0; i<ids-1; i++) {
     pthread_join(client_th[i], NULL);
+    printf("Joined %i\n", i);
   }
+  printf("Thread joined.\n");
 /* EXECUTION END */
   for (int i = 0; i < NUM_ACCTS; i++) {
     pthread_mutex_destroy(&myLocks[i]);
