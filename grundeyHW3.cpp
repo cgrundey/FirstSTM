@@ -13,6 +13,9 @@
 *   g++ grundeyHW3.cpp -o HW3 -lpthread
 */
 
+/* TODO: Run 3 configurations
+   TODO:  */
+
 #include <pthread.h>
 #include <list>
 #include <cstdlib>
@@ -35,7 +38,7 @@
 #define MFENCE  __asm__ volatile ("mfence":::"memory")
 
 #define NUM_ACCTS    1000000
-#define NUM_TRFR     10
+#define NUM_TXN      100000
 #define TRFR_AMT     50
 #define INIT_BALANCE 1000
 
@@ -51,76 +54,87 @@ vector<Acct> accts;
 // unordered_map<pthread_mutex_t, int> myLocks;
 pthread_mutex_t myLocks[NUM_ACCTS];
 int numThreads;
+thread_local list<Acct> read_set;
+thread_local list<Acct> write_set;
+
+class STM_exception: public exception {
+  virtual const char* what() const throw() {
+    return "Transaction aborted";
+  }
+};
 
 /* Where a transaction begins. Read and write sets are intialized and cleared. */
-void tx_begin(list<Acct>& read_set, list<Acct>& write_set) {
+void tx_begin() {
   read_set.clear();
   write_set.clear();
 }
+/* Aborts from transaction by throwing ann exception of type STM_exception */
+void tx_abort() {
+  STM_exception myexc;
+  throw myexc;
+}
 /* Adds account with version to read_set and returns the value for later use. */
-int tx_read(int addr, list<Acct>& read_set) {
-  int lck = pthread_mutex_lock(&(myLocks[addr]));
+int tx_read(int addr) {
+  int lck = pthread_mutex_trylock(&(myLocks[addr]));
   if (!lck) {
     read_set.push_back(accts[addr]);
     return accts[addr].value;
   }
   else
-    return -1; // ABORT - TODO: maybe consider retrying lock
+    tx_abort();
 }
 /* Adds a version of the account at addr to write_set with the given value. */
-bool tx_write(int addr, int val, list<Acct>& write_set) {
-  int lck = pthread_mutex_lock(&(myLocks[addr]));
+bool tx_write(int addr, int val) {
+  int lck = pthread_mutex_trylock(&(myLocks[addr]));
   if (!lck) {
     Acct temp; temp.addr = addr;
     temp.value = val;
     temp.ver = accts[addr].ver;
     write_set.push_back(temp);
-    return true;
-  }
-  return false; // ABORT - TODO: maybe consider retrying lock
+  } else
+    tx_abort();
 }
 /* Attempts to commit the transaction. Checks read and write set versions
  * and compares it to memory versions (i.e. accts[].ver). If valid, all
  * accounts in read and write sets are written back to memory. */
-bool tx_commit(list<Acct>& read_set, list<Acct>& write_set) {
+void tx_commit() {
   list<Acct>::iterator iterator;
   bool aborting = false;
   /* Validate write_set */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
-    if (aborting) { // Abort_2
-      pthread_mutex_unlock(&(myLocks[iterator->addr]));
-      continue;
-    }
-    pthread_mutex_lock(&(myLocks[iterator->addr]));
+    pthread_mutex_trylock(&(myLocks[iterator->addr]));
     if (iterator->ver != accts[iterator->addr].ver) {
-      aborting = true; // Abort_1
-      iterator = write_set.begin(); // Begin parse again to unlock all
+      aborting = true;
+      break;
     }
   }
-  if (aborting) // Abort_3
-    return false;
+  if (aborting) {
+    // Release all locks
+    for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator)
+      pthread_mutex_unlock(&(myLocks[iterator->addr]));
+    tx_abort();
+  }
   aborting = false;
   /* Validate read_set */
   for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator) {
-    if (aborting) { // Abort_2
-      pthread_mutex_unlock(&(myLocks[iterator->addr]));
-      continue;
-    }
-    pthread_mutex_lock(&(myLocks[iterator->addr]));
+    pthread_mutex_trylock(&(myLocks[iterator->addr]));
     if (iterator->ver != accts[iterator->addr].ver) {
-      aborting = true; // Abort_1
-      iterator = read_set.begin(); // Begin parse again to unlock all
+      aborting = true;
+      break;
     }
   }
-  if (aborting) // Abort_3
-    return false;
+  if (aborting) {
+    // Release all locks
+    for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator)
+      pthread_mutex_unlock(&(myLocks[iterator->addr]));
+    tx_abort();
+  }
   /* Validation is a success */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
     accts[iterator->addr].value = iterator->value;
     accts[iterator->addr].ver = iterator->ver;
     pthread_mutex_unlock(&(myLocks[iterator->addr]));
   }
-  return true;
 }
 
 inline unsigned long long get_real_time() {
@@ -141,33 +155,40 @@ void barrier(int which) {
 // Thread function
 void* th_run(void * args)
 {
+  printf("Testing...\n");
   long id = (long)args;
   barrier(0);
   srand((unsigned)time(0));
 
   list<Acct> read_set;
   list<Acct> write_set;
+  bool aborted = false;
 
-  int workload = NUM_TRFR/numThreads;
+  int workload = NUM_TXN / numThreads;
   for (int i = 0; i < workload; i++) {
 // ________________BEGIN_________________
+    aborted = false;
     do {
-      tx_begin(read_set, write_set);
-      int r1 = 0;
-      int r2 = 0;
-      for (int j = 0; j < 10; j++) {
-        while (r1 == r2) {
-          r1 = rand() % NUM_ACCTS;
-          r2 = rand() % NUM_ACCTS;
+      try {
+        tx_begin();
+        int r1 = 0;
+        int r2 = 0;
+        for (int j = 0; j < 10; j++) {
+          while (r1 == r2) {
+            r1 = rand() % NUM_ACCTS;
+            r2 = rand() % NUM_ACCTS;
+          }
+          // Perform the transfer
+          int a1 = tx_read(r1);
+          int a2 = tx_read(r2);
+          tx_write(r1, a1 - TRFR_AMT);
+          tx_write(r2, a2 + TRFR_AMT);
+          tx_commit();
         }
-        // Perform the transfer
-        int a1 = tx_read(r1, read_set);
-        if (a1 < 0) {continue;}
-        int a2 = tx_read(r2, read_set);
-        tx_write(r1, a1 - TRFR_AMT, write_set);
-        tx_write(r2, a2 + TRFR_AMT, write_set);
+      } catch(STM_exception ex) {
+        aborted = true;
       }
-    } while (!tx_commit(read_set, write_set));
+    } while (aborted);
 // _________________END__________________
   }
   return 0;
@@ -185,10 +206,12 @@ int main(int argc, char* argv[]) {
       exit(0);
     }
   }
+  printf("Number of threads: %d\n", numThreads);
 
   // Initializing 1,000,000 accounts with $1000 each
   for (int i = 0; i < NUM_ACCTS; i++) {
-    accts[i].value = INIT_BALANCE;
+    Acct temp = {i, INIT_BALANCE, 0};
+    accts.push_back(temp);
   }
 
   // Initialize mutex locks
@@ -198,13 +221,14 @@ int main(int argc, char* argv[]) {
       return 1;
     }
   }
+
   // Thread initializations
   pthread_attr_t thread_attr;
   pthread_attr_init(&thread_attr);
 
   pthread_t client_th[300];
   long ids = 1;
-  for (int i = 1; i < numThreads; i++) {
+  for (int i = 0; i < numThreads; i++) {
     pthread_create(&client_th[ids-1], &thread_attr, th_run, (void*)ids);
     ids++;
   }
@@ -212,7 +236,6 @@ int main(int argc, char* argv[]) {
 /* EXECUTION BEGIN */
   unsigned long long start = get_real_time();
   th_run(0);
-
   long totalMoneyBefore = 0;
   for (int i = 0; i < NUM_ACCTS; i++) {
     totalMoneyBefore += accts[i].value;
