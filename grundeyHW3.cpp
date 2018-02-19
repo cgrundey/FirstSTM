@@ -11,6 +11,7 @@
 *
 * Compile:
 *   g++ grundeyHW3.cpp -o HW3 -lpthread
+*   add -g option for gdb
 */
 
 /* TODO: Run 3 configurations
@@ -57,11 +58,7 @@ int numThreads;
 thread_local list<Acct> read_set;
 thread_local list<Acct> write_set;
 
-class STM_exception: public exception {
-  virtual const char* what() const throw() {
-    return "Transaction aborted";
-  }
-}myexc;
+static volatile long abort_count = 0;
 
 /* Where a transaction begins. Read and write sets are intialized and cleared. */
 void tx_begin() {
@@ -75,10 +72,19 @@ void tx_abort() {
     pthread_mutex_unlock(&(myLocks[iterator->addr]));
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator)
     pthread_mutex_unlock(&(myLocks[iterator->addr]));
-  throw "Transaction Aborted";
+  __sync_fetch_and_add(&abort_count, 1);
+  throw "Transaction ABORTED";
 }
 /* Adds account with version to read_set and returns the value for later use. */
 int tx_read(int addr) {
+  // Look in write_set first
+  list<Acct>::reverse_iterator iterator;
+  for (iterator = write_set.rbegin(); iterator != write_set.rend(); ++iterator) {
+    if (iterator->addr == addr) {
+      read_set.push_back(*iterator);
+      return iterator->value;
+    }
+  } // Must be in memory (i.e. vector of Accts)
   if (!pthread_mutex_trylock(&(myLocks[addr]))) {
     read_set.push_back(accts[addr]);
     pthread_mutex_unlock(&(myLocks[addr]));
@@ -136,7 +142,7 @@ void barrier(int which) {
     static volatile int barriers[16] = {0};
     CFENCE;
     __sync_fetch_and_add(&barriers[which], 1);
-    while (barriers[which] != numThreads) { }
+    while (barriers[which] < numThreads) { }
     CFENCE;
 }
 
@@ -154,8 +160,8 @@ void* th_run(void * args)
   int workload = NUM_TXN / numThreads;
   for (int i = 0; i < workload; i++) {
 // ________________BEGIN_________________
-    aborted = false;
     do {
+      aborted = false;
       try {
         tx_begin();
         int r1 = 0;
@@ -167,13 +173,15 @@ void* th_run(void * args)
           }
           // Perform the transfer
           int a1 = tx_read(r1);
+          if (a1 < TRFR_AMT)
+            break;
           int a2 = tx_read(r2);
           tx_write(r1, a1 - TRFR_AMT);
           tx_write(r2, a2 + TRFR_AMT);
           tx_commit();
         }
       } catch(const char* msg) {
-        printf("ERROR: %s\n", msg);
+        // printf("%s\n", msg);
         aborted = true;
       }
     } while (aborted);
@@ -202,6 +210,10 @@ int main(int argc, char* argv[]) {
     accts.push_back(temp);
   }
 
+  long totalMoneyBefore = 0;
+  for (int i = 0; i < NUM_ACCTS; i++)
+    totalMoneyBefore += accts[i].value;
+
   // Initialize mutex locks
   for (int i = 0; i < NUM_ACCTS; i++) {
     if (pthread_mutex_init(&myLocks[i], NULL) != 0) {
@@ -224,26 +236,23 @@ int main(int argc, char* argv[]) {
 /* EXECUTION BEGIN */
   unsigned long long start = get_real_time();
   th_run(0);
-  long totalMoneyBefore = 0;
-  for (int i = 0; i < NUM_ACCTS; i++) {
-    totalMoneyBefore += accts[i].value;
-  }
-  printf("Before Join\n");
-
+  // Joining Threads
   for (int i=0; i<ids-1; i++) {
     pthread_join(client_th[i], NULL);
-    printf("Joined %i\n", i);
   }
-  printf("Thread joined.\n");
 /* EXECUTION END */
   for (int i = 0; i < NUM_ACCTS; i++) {
     pthread_mutex_destroy(&myLocks[i]);
   }
+  long totalMoneyAfter = 0;
+  for (int i = 0; i < NUM_ACCTS; i++)
+    totalMoneyAfter += accts[i].value;
 
   //printf("Total transfers: %d\n", actual_transfers);
-  printf("Total time = %lld ns\n", get_real_time() - start);
+  printf("\nTotal time = %lld ns\n", get_real_time() - start);
   printf("Total Money Before: $%ld\n", totalMoneyBefore);
-  // printf("Total Money After: $%ld\n", totalMoneyAfter);
+  printf("Total Money After:  $%ld\n", totalMoneyAfter);
+  printf("Abort Count: %ld\n\n", abort_count);
 
   return 0;
 }
