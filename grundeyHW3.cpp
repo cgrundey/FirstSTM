@@ -14,9 +14,6 @@
 *   add -g option for gdb
 */
 
-/* TODO: Run 3 configurations
-   TODO:  */
-
 #include <pthread.h>
 #include <list>
 #include <cstdlib>

@@ -132,7 +132,7 @@ void tx_commit() {
   /* Validation is a success */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
     accts[iterator->addr].value = iterator->value;
-    accts[iterator->addr].ver = iterator->ver + 1;
+    accts[iterator->addr].ver = iterator->ver;
     pthread_mutex_unlock(&(myLocks[iterator->addr]));
   }
 }
@@ -164,39 +164,40 @@ void* th_run(void * args)
   bool aborted = false;
   int start, end;
   int thrange = NUM_ACCTS / numThreads;
-  start = thrange * id;
-  printf("start: %d    ID: %d\n", start, id);
-
-  int workload = NUM_TXN / numThreads;
-  for (int i = 0; i < workload; i++) {
-// ________________BEGIN_________________
-    do {
-      aborted = false;
-      try {
-        tx_begin();
-        int r1 = 0;
-        int r2 = 0;
-        for (int j = 0; j < 10; j++) {
-          while (r1 == r2) {
-            r1 = start + (rand() % (thrange - 1));
-            r2 = start + (rand() % (thrange - 1));
-            printf("%d    %d\n", r1, r2);
+  start = thrange * (id-1);
+  // printf("start: %d    ID: %d\n", start, id);
+  if (id != 0) {
+    int workload = NUM_TXN / numThreads;
+    for (int i = 0; i < workload; i++) {
+  // ________________BEGIN_________________
+      do {
+        aborted = false;
+        try {
+          tx_begin();
+          int r1 = 0;
+          int r2 = 0;
+          for (int j = 0; j < 10; j++) {
+            while (r1 == r2) {
+              r1 = start + (rand() % (thrange - 1));
+              r2 = start + (rand() % (thrange - 1));
+              // printf("r1: %d    r2:  %d\n", r1, r2);
+            }
+            // Perform the transfer
+            int a1 = tx_read(r1);
+            if (a1 < TRFR_AMT)
+              continue;
+            int a2 = tx_read(r2);
+            tx_write(r1, a1 - TRFR_AMT);
+            tx_write(r2, a2 + TRFR_AMT);
+            tx_commit();
           }
-          // Perform the transfer
-          int a1 = tx_read(r1);
-          if (a1 < TRFR_AMT)
-            continue;
-          int a2 = tx_read(r2);
-          tx_write(r1, a1 - TRFR_AMT);
-          tx_write(r2, a2 + TRFR_AMT);
-          tx_commit();
+        } catch(const char* msg) {
+          // printf("%s\n", msg);
+          aborted = true;
         }
-      } catch(const char* msg) {
-        // printf("%s\n", msg);
-        aborted = true;
-      }
-    } while (aborted);
-// _________________END__________________
+      } while (aborted);
+  // _________________END__________________
+    }
   }
   return 0;
 }
